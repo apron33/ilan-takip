@@ -28,6 +28,8 @@ LOCAL = ["ankara", "kırıkkale", "kırşehir", "çankırı", "eskişehir", "bol
 SKIP = ["akademik", "öğretim üyesi", "öğretim görevlisi", "araştırma görevlisi",
         "doktor", "hekim", "öğretmen", "hemşire", "avukat", "subay",
         "astsubay", "uzman erbaş", "polis", "bekçi"]
+NOISE = ["kesinti", "arıza", "malzeme", "ihale", "ortaöğretim", "p94",
+         "atama puanları", "taban puan"]
 MONTHS = {"ocak": 1, "şubat": 2, "mart": 3, "nisan": 4, "mayıs": 5,
           "haziran": 6, "temmuz": 7, "ağustos": 8, "eylül": 9,
           "ekim": 10, "kasım": 11, "aralık": 12}
@@ -150,7 +152,10 @@ def main():
             if key in seen or not any(k in text for k in KEYS):
                 continue
             has_prio = any(k in text for k in PRIO)
-            if any(k in tl(title) for k in SKIP) and not has_prio:
+            low_title = tl(title)
+            if any(k in low_title for k in NOISE):
+                continue
+            if any(k in low_title for k in SKIP) and not has_prio:
                 continue
             has_local = any(k in text for k in LOCAL)
             seen[key] = dict(
