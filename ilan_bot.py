@@ -1,4 +1,4 @@
-import os, re, json
+import os, re, json, html
 import datetime as dt
 import urllib.request, urllib.parse
 import xml.etree.ElementTree as ET
@@ -25,6 +25,9 @@ KEYS = ["ön lisans", "önlisans", "kpss", "p93", "teknisyen", "tekniker",
 PRIO = ["elektrik", "teknisyen", "tekniker", "elektronik"]
 LOCAL = ["ankara", "kırıkkale", "kırşehir", "çankırı", "eskişehir", "bolu",
          "konya", "aksaray", "yozgat", "çorum", "karabük", "nevşehir"]
+SKIP = ["akademik", "öğretim üyesi", "öğretim görevlisi", "araştırma görevlisi",
+        "doktor", "hekim", "öğretmen", "hemşire", "avukat", "subay",
+        "astsubay", "uzman erbaş", "polis", "bekçi"]
 MONTHS = {"ocak": 1, "şubat": 2, "mart": 3, "nisan": 4, "mayıs": 5,
           "haziran": 6, "temmuz": 7, "ağustos": 8, "eylül": 9,
           "ekim": 10, "kasım": 11, "aralık": 12}
@@ -86,20 +89,49 @@ def get_chat_id():
     for u in reversed(api("getUpdates").get("result", [])):
         if u.get("message"):
             return str(u["message"]["chat"]["id"])
-    raise SystemExit("Chat ID yok: botuna Telegram'dan mesaj yazip tekrar calistir")
+    raise SystemExit("Chat ID yok")
 
 
 def send(chat, text):
     chunk = ""
-    for line in text.split("\n"):
-        if len(chunk) + len(line) > 3800:
+    for ln in text.split("\n"):
+        if len(chunk) + len(ln) > 3800:
             api("sendMessage", {"chat_id": chat, "text": chunk,
+                                "parse_mode": "HTML",
                                 "disable_web_page_preview": "true"})
             chunk = ""
-        chunk += line + "\n"
+        chunk += ln + "\n"
     if chunk.strip():
         api("sendMessage", {"chat_id": chat, "text": chunk,
+                            "parse_mode": "HTML",
                             "disable_web_page_preview": "true"})
+
+
+def split_src(title):
+    if " - " in title:
+        t, s = title.rsplit(" - ", 1)
+        return t.strip(), s.strip()
+    return title, ""
+
+
+def fmt(i, x, extra=""):
+    t, s = split_src(x["title"])
+    href = html.escape(x["link"], quote=True)
+    src = f" <i>({html.escape(s)})</i>" if s else ""
+    fl = (x["flags"] + " ") if x["flags"] else ""
+    return f'{i}. {fl}<a href="{href}">{html.escape(t)}</a>{src}{extra}'
+
+
+def section(title, items, limit, counter, extra_fn=None):
+    if not items:
+        return ""
+    out = f"\n<b>{title}</b>\n"
+    for x in items[:limit]:
+        counter[0] += 1
+        out += fmt(counter[0], x, extra_fn(x) if extra_fn else "") + "\n"
+    if len(items) > limit:
+        out += f"+{len(items) - limit} ilan daha\n"
+    return out
 
 
 def main():
@@ -117,28 +149,34 @@ def main():
             text = tl(title + " " + desc)
             if key in seen or not any(k in text for k in KEYS):
                 continue
-            score = 2 * any(k in text for k in PRIO) + any(k in text for k in LOCAL)
-            flags = ("⚡" if any(k in text for k in PRIO) else "") + \
-                    ("📍" if any(k in text for k in LOCAL) else "")
-            seen[key] = dict(title=title, link=link, pub=pub, score=score,
-                             flags=flags, dl=deadline(title + " " + desc, today))
+            has_prio = any(k in text for k in PRIO)
+            if any(k in tl(title) for k in SKIP) and not has_prio:
+                continue
+            has_local = any(k in text for k in LOCAL)
+            seen[key] = dict(
+                title=title, link=link, pub=pub,
+                score=2 * has_prio + has_local,
+                flags=("⚡" if has_prio else "") + ("📍" if has_local else ""),
+                dl=deadline(title + " " + desc, today))
     urgent = sorted([x for x in seen.values() if x["dl"]], key=lambda x: x["dl"])
-    fresh = sorted([x for x in seen.values() if not x["dl"]
-                    and now - x["pub"] <= dt.timedelta(hours=26)],
-                   key=lambda x: -x["score"])
-    msg = f"Günaydın! Kamu ilan özeti ({today.strftime('%d.%m.%Y')})\n"
-    if urgent:
-        msg += "\n⏰ SON GÜNÜ YAKLAŞANLAR\n"
-        for x in urgent:
-            msg += f"{x['flags']} {x['title']}\nSon: {x['dl'].strftime('%d.%m.%Y')}\n{x['link']}\n\n"
-    if fresh:
-        msg += "\n🆕 SON 24 SAAT\n"
-        for x in fresh:
-            msg += f"{x['flags']} {x['title']}\n{x['link']}\n\n"
-    if not urgent and not fresh:
+    fresh = [x for x in seen.values() if not x["dl"]
+             and now - x["pub"] <= dt.timedelta(hours=26)]
+    both = [x for x in fresh if x["score"] == 3]
+    tech = [x for x in fresh if x["score"] == 2]
+    local = [x for x in fresh if x["score"] == 1]
+    other = [x for x in fresh if x["score"] == 0]
+
+    c = [0]
+    msg = f"☀️ <b>Günaydın! Kamu ilan özeti</b> ({today.strftime('%d.%m.%Y')})\n"
+    msg += section("⏰ SON GÜNÜ YAKLAŞANLAR", urgent, 8, c,
+                   lambda x: f" — son: {x['dl'].strftime('%d.%m')}")
+    msg += section("⚡📍 ELEKTRİK + ANKARA/ÇEVRE", both, 8, c)
+    msg += section("⚡ ELEKTRİK / TEKNİK", tech, 8, c)
+    msg += section("📍 ANKARA VE ÇEVRE", local, 6, c)
+    msg += section("🆕 DİĞER KAMU İLANLARI", other, 5, c)
+    if c[0] == 0:
         msg += "\nBugün yeni ilan bulunamadı. Bot çalışıyor."
-    if not CHAT_ID:
-        msg += f"\nChat ID: {chat} (bunu TELEGRAM_CHAT_ID secret'i olarak kaydet)"
+    msg += "\n<i>Başlığa dokun, ilan açılır. ⚡ elektrik/teknik · 📍 Ankara ve çevre</i>"
     send(chat, msg)
 
 
